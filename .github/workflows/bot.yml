@@ -1,0 +1,63 @@
+name: Telegram bot 24/7
+
+on:
+  workflow_dispatch:        # qo'lda ishga tushirish va o'zini qayta ishga tushirish uchun
+  schedule:
+    - cron: "7 * * * *"     # zanjir uzilib qolsa, har soatda qayta tiklaydi
+
+# Bir vaqtda faqat bitta bot ishlasin (ikkita bo'lsa Telegram 409 xato beradi)
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write            # keyingi ishga tushirishni boshlash uchun
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355    # GitHub chegarasi 360 daqiqa
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+      DB_PATH: data/bot.db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Tugmalar va fayl kodlari bazasini oldingi ishga tushirishdan tiklaymiz
+      - name: Bazani tiklash
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: bot-db-${{ github.run_id }}
+          restore-keys: bot-db-
+
+      - name: Botni ishga tushirish (~5 soat 40 daqiqa)
+        run: |
+          START=$(date +%s)
+          timeout --signal=SIGINT 20400 python bot.py || true
+          echo "ELAPSED=$(( $(date +%s) - START ))" >> "$GITHUB_ENV"
+
+      # Bot to'xtagandan keyin bazani saqlaymiz
+      - name: Bazani saqlash
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: bot-db-${{ github.run_id }}
+
+      # Bot kamida 10 daqiqa ishlagan bo'lsagina qayta ishga tushiramiz
+      # (token xato bo'lsa, cheksiz aylanib daqiqalarni yeb qo'ymasligi uchun)
+      - name: Keyingi ishga tushirishni boshlash
+        if: env.ELAPSED != '' && env.ELAPSED > 600
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot.yml --repo "${{ github.repository }}"
